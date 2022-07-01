@@ -1,0 +1,11 @@
+[
+{
+  "directory": "/home/rossetta/Code/cpp/text_editor",
+  "arguments": ["/usr/bin/gcc", "-c", "-m64", "-o", "build/.objs/editor/linux/x86_64/release/src/utils.c.o", "src/utils.c"],
+  "file": "src/utils.c"
+},
+{
+  "directory": "/home/rossetta/Code/cpp/text_editor",
+  "arguments": ["/usr/bin/gcc", "-c", "-m64", "-o", "build/.objs/editor/linux/x86_64/release/src/kilo.c.o", "src/kilo.c"],
+  "file": "src/kilo.c"
+}]
