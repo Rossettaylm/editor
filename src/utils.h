@@ -1,6 +1,16 @@
 #ifndef __UTILS_H__
 #define __UTILS_H__
 
+/*** defines ***/
+// 'q' = 1110001
+//  ctrl_q = 10001
+#include <ctype.h>
+#include <stdio.h>
+#include <unistd.h>
+#define CTRL_KEY(k) ((k)&0x1f) // 取变量k的低5位
+
+/************ terminal *******************/
+
 /**
  * @brief Turn off echoing, Turn off canonical mode, Turn off ctrl-c and ctrl-z
  * signals
@@ -29,4 +39,37 @@ void disableRawMode();
 
 void die(const char *s);
 
-#endif  // __UTILS_H__
+/**
+ * @brief low level keypress reading
+ * @return char
+ */
+char editorReadKey();
+
+/**
+ * @brief Get the Window Size
+ */
+int getWindowSize(int *rows, int *cols);
+
+/**
+ * @brief Get the Cursor Position
+ */
+int getCursorPosition(int *rows, int *cols);
+
+/************ input *******************/
+
+void editorProcessKeypress();
+
+/************ output *******************/
+
+/**
+ * @brief refresh the screen with escape sequence
+ */
+void editorRefreshScreen();
+
+void editorDrawRows();
+
+/************ init *********************/
+
+void initEditor();
+
+#endif // __UTILS_H__
