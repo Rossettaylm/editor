@@ -1,26 +1,25 @@
 #include "utils.h"
 
 #include <asm-generic/ioctls.h>
-#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 
 #include <termios.h>
 #include <unistd.h>
 
 /*** datas ***/
-struct editorConfig {
-  int screenRows;
-  int screenCols;
-  struct termios origin_termios;
-};
 
 struct editorConfig E;
 
 /*** init ***/
 void initEditor() {
+  // 初始化光标位置
+  E.cx = 0;
+  E.cy = 0;
+
   if (getWindowSize(&E.screenRows, &E.screenCols) == -1) {
     die("getWindowsSize");
   }
@@ -87,7 +86,7 @@ void enableRawMode() {
   }
 }
 
-char editorReadKey() {
+int editorReadKey() {
   int nread;
   char c;
   while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
@@ -95,7 +94,62 @@ char editorReadKey() {
       die("read");
     }
   }
-  return c;
+
+  // 将上下左右的escape sequence映射到定义的editorKey enum结构中
+  if (c == '\x1b') {
+    char seq[3];
+    if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+    if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
+
+    if (seq[0] == '[') {
+      if (seq[1] >= '0' && seq[1] <= '9') {
+        if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
+        if (seq[2] == '~') {
+          switch (seq[1]) {
+            case '1':
+              return HOME_KEY;
+            case '3':
+              return DEL_KEY;
+            case '4':
+              return END_KEY;
+            case '5':
+              return PAGE_UP; // <esc>[5~
+            case '6':
+              return PAGE_DOWN; // <esc>[6~
+            case '7':
+              return HOME_KEY;
+            case '8':
+              return END_KEY;
+          }
+        }
+      } else {
+        switch (seq[1]) {
+          case 'A':
+            return ARROW_UP;
+          case 'B':
+            return ARROW_DOWN;
+          case 'C':
+            return ARROW_RIGHT;
+          case 'D':
+            return ARROW_LEFT;
+          case 'H':
+            return HOME_KEY;
+          case 'F':
+            return END_KEY;
+        }
+      }
+    } else if (seq[0] == 'O') {
+      switch (seq[1]) {
+        case 'H':
+          return HOME_KEY;
+        case 'F':
+          return END_KEY;
+      }
+    }
+    return '\x1b';
+  } else {
+    return c;
+  }
 }
 
 int getWindowSize(int *rows, int *cols) {
@@ -154,41 +208,135 @@ int getCursorPosition(int *rows, int *cols) {
  * @brief mapping keys to editor functions at a much higher level.
  */
 void editorProcessKeypress() {
-  char c = editorReadKey();
+  int c = editorReadKey();
+
   switch (c) {
-  case CTRL_KEY('q'):
-    write(STDOUT_FILENO, "\x1b[2J", 4); // clear screen
-    write(STDOUT_FILENO, "\x1b[H", 3);  // reposition cursor to top
-    exit(0);
-    break;
+    case CTRL_KEY('q'):
+      write(STDOUT_FILENO, "\x1b[2J", 4); // clear screen
+      write(STDOUT_FILENO, "\x1b[H", 3);  // reposition cursor to top
+      exit(0);
+      break;
+
+    case HOME_KEY:
+      E.cx = 0;
+      break;
+    case END_KEY:
+      E.cx = E.screenCols - 1;
+      break;
+
+    case PAGE_UP:
+    case PAGE_DOWN: {
+      int times = E.screenRows;
+      while (times--) {
+        editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+      }
+    }
+      break;
+
+    case ARROW_UP:
+    case ARROW_DOWN:
+    case ARROW_LEFT:
+    case ARROW_RIGHT:
+      editorMoveCursor(c);
+      break;
   }
 }
 
 /*** output ***/
 
 /**
- * @brief refresh screen accordding to write a 4 bytes character
+ * @brief refresh screen
  * 第一个字节：\x1b 表示16进制的1b, 十进制的27, 'escape' character
  * 其余三个字节分别是：[2J
- * <esc>[1J 是escape sequence命令，用来执行终端文本格式化命令
- * <esc>[12;40H  表示对光标的重定位，12;40是位置
+ * <esc>[1J 表示 clear screen
+ * <esc>[12;40H  表示对光标的重定位，12;40是位置, [H表示左上角
  */
 void editorRefreshScreen() {
-  write(STDOUT_FILENO, "\x1b[2J", 4); // clear screen
-  write(STDOUT_FILENO, "\x1b[H", 3);  // reposition cursor to top
-  editorDrawRows();
-  write(STDOUT_FILENO, "\x1b[H", 3);
+  struct abuf ab = ABUF_INIT;
+
+  abAppend(&ab, "\x1b[?25l", 6); // 刷新缓冲区前立刻显示光标
+  abAppend(&ab, "\x1b[H", 3); // move cursor to the left top
+
+  editorDrawRows(&ab);
+
+  // 每次刷新屏幕时，将光标的位置传入escape sequence来控制光标移动
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  abAppend(&ab, buf, strlen(buf));
+
+  abAppend(&ab, "\x1b[?25h", 6); // 在刷新缓冲区前隐藏光标
+
+  // 最后将缓冲区的字符串写入到标准输出
+  write(STDOUT_FILENO, ab.b, ab.len);
+
+  abFree(&ab);
 }
 
-void editorDrawRows() {
+void editorDrawRows(struct abuf *ab) {
   int y;
   // 在每行的开头绘制波浪号
   for (y = 0; y < E.screenRows; ++y) {
-    write(STDOUT_FILENO, "~", 1);
+    // 在屏幕的三分之一高度处, 插入KILO_VERSION
+    if (y == E.screenRows / 3) {
+      char welcome[80];
+      int welcomeLen = snprintf(welcome, sizeof(welcome),
+                                "kilo editor -- version %s", KILO_VERSION);
+      // 防止越界
+      if (welcomeLen > E.screenCols) {
+        welcomeLen = E.screenCols;
+      }
+      int padding = (E.screenCols - welcomeLen) / 2;
+      if (padding) {
+        abAppend(ab, "~", 1);
+        padding--;
+      }
+      while (padding--) abAppend(ab, " ", 1);
 
+      abAppend(ab, welcome, welcomeLen);
+    } else {
+      abAppend(ab, "~", 1);
+    }
+
+    abAppend(ab, "\x1b[K", 3); // clear line when we redraw
     // 最后一行不需要进行回车换行
     if (y < E.screenRows - 1) {
-      write(STDOUT_FILENO, "\r\n", 2);
+      abAppend(ab, "\r\n", 2);
     }
   }
 }
+
+void abAppend(struct abuf *ab, const char *s, int len) {
+  // 在原来abuf的地址上多分配len长度的空间
+  char *new = realloc(ab->b, ab->len + len);
+  if (new == NULL) return;
+  memcpy(&new[ab->len], s, len);
+  ab->b = new;
+  ab->len += len;
+}
+
+void abFree(struct abuf *ab) {
+  free(ab->b);
+}
+
+void editorMoveCursor(int key) {
+  switch (key) {
+    case ARROW_LEFT:
+      if (E.cx != 0)
+        E.cx--;
+      break;
+    case ARROW_RIGHT:
+      if (E.cx != E.screenCols - 1)
+        E.cx++;
+      break;
+    case ARROW_UP:
+      if (E.cy != 0)
+        E.cy--;
+      break;
+    case ARROW_DOWN:
+      if (E.cy != E.screenRows - 1)
+        E.cy++;
+      break;
+  }
+}
+
+

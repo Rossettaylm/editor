@@ -7,7 +7,39 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <termios.h>
+
 #define CTRL_KEY(k) ((k)&0x1f) // 取变量k的低5位
+#define KILO_VERSION "0.0.1"
+
+/************ data **********************/
+struct editorConfig {
+  int cx, cy; // 表示光标当前位置
+  int screenRows;
+  int screenCols;
+  struct termios origin_termios;
+};
+
+/*** append buffer ***/
+// 定义一个缓冲区数据结构，用来代替重复的write()
+struct abuf {
+  char *b;
+  int len;
+};
+
+#define ABUF_INIT {NULL, 0}; // 用来定义一个空的缓冲区
+
+enum editorKey {
+  ARROW_LEFT = 1000,
+  ARROW_RIGHT,
+  ARROW_UP,
+  ARROW_DOWN,
+  DEL_KEY,
+  HOME_KEY,
+  END_KEY,
+  PAGE_UP,
+  PAGE_DOWN,
+};
 
 /************ terminal *******************/
 
@@ -43,7 +75,7 @@ void die(const char *s);
  * @brief low level keypress reading
  * @return char
  */
-char editorReadKey();
+int editorReadKey();
 
 /**
  * @brief Get the Window Size
@@ -55,9 +87,25 @@ int getWindowSize(int *rows, int *cols);
  */
 int getCursorPosition(int *rows, int *cols);
 
+/**
+ * 向缓冲区写入长度为len的字符串
+ * @param ab 缓冲区
+ * @param s 待写入的字符串
+ * @param len 字符串长度
+ */
+void abAppend(struct abuf *ab, const char *s, int len);
+
+/**
+ * 释放缓冲区分配的内存空间
+ * @param ab
+ */
+void abFree(struct abuf *ab);
+
 /************ input *******************/
 
 void editorProcessKeypress();
+
+void editorMoveCursor(int key);
 
 /************ output *******************/
 
