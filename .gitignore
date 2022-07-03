@@ -5,6 +5,10 @@
 .xmake/
 build/
 
+# cmake
+cmake-build-debug/
+.idea/
+
 # MacOS Cache
 .DS_Store
 
