@@ -12,11 +12,25 @@
 #define CTRL_KEY(k) ((k)&0x1f) // 取变量k的低5位
 #define KILO_VERSION "0.0.1"
 
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 /************ data **********************/
+// 存储一行的文本数据
+typedef struct erow {
+  int size;
+  char *chars;
+} erow;
+
 struct editorConfig {
   int cx, cy; // 表示光标当前位置
+  int rowoff; // 表示纵向已经翻过的行数
+  int coloff; // 表示横向已经犯过的列数
   int screenRows;
   int screenCols;
+  int numrows; // 文件共有多少行
+  erow *row;  // 存放文本数据的erow数组，row每个erow代表了每行的文本数据
   struct termios origin_termios;
 };
 
@@ -40,6 +54,7 @@ enum editorKey {
   PAGE_UP,
   PAGE_DOWN,
 };
+
 
 /************ terminal *******************/
 
@@ -101,6 +116,12 @@ void abAppend(struct abuf *ab, const char *s, int len);
  */
 void abFree(struct abuf *ab);
 
+/************* row operations ***********/
+void editorAppendRow(char *s, size_t len);
+
+/************* file I/O ***************/
+void editorOpen(char *filename);
+
 /************ input *******************/
 
 void editorProcessKeypress();
@@ -114,7 +135,9 @@ void editorMoveCursor(int key);
  */
 void editorRefreshScreen();
 
-void editorDrawRows();
+void editorDrawRows(struct abuf *ab);
+
+void editorScroll();
 
 /************ init *********************/
 

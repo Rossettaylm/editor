@@ -2,6 +2,7 @@
 
 #include <asm-generic/ioctls.h>
 #include <errno.h>
+#include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,10 @@ void initEditor() {
   // 初始化光标位置
   E.cx = 0;
   E.cy = 0;
+  E.rowoff = 0;
+  E.coloff = 0;
+  E.numrows = 0;
+  E.row = NULL;
 
   if (getWindowSize(&E.screenRows, &E.screenCols) == -1) {
     die("getWindowsSize");
@@ -252,6 +257,8 @@ void editorProcessKeypress() {
  * <esc>[12;40H  表示对光标的重定位，12;40是位置, [H表示左上角
  */
 void editorRefreshScreen() {
+  editorScroll();
+
   struct abuf ab = ABUF_INIT;
 
   abAppend(&ab, "\x1b[?25l", 6); // 刷新缓冲区前立刻显示光标
@@ -261,7 +268,7 @@ void editorRefreshScreen() {
 
   // 每次刷新屏幕时，将光标的位置传入escape sequence来控制光标移动
   char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
   abAppend(&ab, buf, strlen(buf));
 
   abAppend(&ab, "\x1b[?25h", 6); // 在刷新缓冲区前隐藏光标
@@ -276,25 +283,34 @@ void editorDrawRows(struct abuf *ab) {
   int y;
   // 在每行的开头绘制波浪号
   for (y = 0; y < E.screenRows; ++y) {
-    // 在屏幕的三分之一高度处, 插入KILO_VERSION
-    if (y == E.screenRows / 3) {
-      char welcome[80];
-      int welcomeLen = snprintf(welcome, sizeof(welcome),
-                                "kilo editor -- version %s", KILO_VERSION);
-      // 防止越界
-      if (welcomeLen > E.screenCols) {
-        welcomeLen = E.screenCols;
-      }
-      int padding = (E.screenCols - welcomeLen) / 2;
-      if (padding) {
+    int filerow = y + E.rowoff;
+    // 还没有文本内容的区域
+    if (filerow >= E.numrows) {
+      // 如果是空白文本，在屏幕的三分之一高度处, 插入KILO_VERSION
+      if (E.numrows == 0 && y == E.screenRows / 3) {
+        char welcome[80];
+        int welcomeLen = snprintf(welcome, sizeof(welcome),
+                                  "kilo editor -- version %s", KILO_VERSION);
+        // 防止越界
+        if (welcomeLen > E.screenCols) {
+          welcomeLen = E.screenCols;
+        }
+        int padding = (E.screenCols - welcomeLen) / 2;
+        if (padding) {
+          abAppend(ab, "~", 1);
+          padding--;
+        }
+        while (padding--) abAppend(ab, " ", 1);
+        abAppend(ab, welcome, welcomeLen);
+      } else {
         abAppend(ab, "~", 1);
-        padding--;
       }
-      while (padding--) abAppend(ab, " ", 1);
-
-      abAppend(ab, welcome, welcomeLen);
     } else {
-      abAppend(ab, "~", 1);
+      // 将已有的文本内容绘制到屏幕上
+      int len = E.row[filerow].size - E.coloff;
+      if (len < 0) len = 0;
+      if (len > E.screenCols) len = E.screenCols;
+      abAppend(ab, &E.row[filerow].chars[E.coloff], len);
     }
 
     abAppend(ab, "\x1b[K", 3); // clear line when we redraw
@@ -319,23 +335,89 @@ void abFree(struct abuf *ab) {
 }
 
 void editorMoveCursor(int key) {
+  // 获取光标所在的当前行
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+
   switch (key) {
     case ARROW_LEFT:
-      if (E.cx != 0)
+      if (E.cx != 0) {
         E.cx--;
+      } else if (E.cy > 0) { // 行首时向上移动一行，到上一行的末尾
+        E.cy--;
+        E.cx = E.row[E.cy].size;
+      }
       break;
     case ARROW_RIGHT:
-      if (E.cx != E.screenCols - 1)
+      // 最右只能移动到文本最右侧的字符
+      if (row && E.cx < row->size) {
         E.cx++;
+      } else if (row && E.cx == row->size) { // 行尾时向下移动一行，到下一行的开头
+        E.cy++;
+        E.cx = 0;
+      }
       break;
     case ARROW_UP:
       if (E.cy != 0)
         E.cy--;
       break;
     case ARROW_DOWN:
-      if (E.cy != E.screenRows - 1)
+      if (E.cy < E.numrows)
         E.cy++;
       break;
+  }
+
+  row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  int rowlen = row ? row->size : 0;
+  if (E.cx > rowlen) {
+    E.cx = rowlen;
+  }
+}
+
+/*** file I/O ***/
+void editorOpen(char *filename) {
+  FILE *fp = fopen(filename, "r");
+  if (!fp) die("fopen");
+
+  char *line = NULL;
+  size_t linecap = 0;
+  ssize_t linelen;
+  while ((linelen = getline(&line, &linecap, fp)) != -1) {
+    while (linelen > 0 && (line[linelen - 1] == '\n' ||
+                           line[linelen - 1] == '\r'))
+      linelen--; // 得到一行文本的长度（不包括换行符）
+    editorAppendRow(line, linelen);
+  }
+  free(line);
+  fclose(fp);
+}
+
+void editorAppendRow(char *s, size_t len) {
+  // 其中E.row是一个指针数组，数组中每个元素指向了一行文本数据的结构体erow
+  E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+
+  int at = E.numrows;
+  E.row[at].size = len;
+  E.row[at].chars = malloc(len + 1);
+  memcpy(E.row[at].chars, s, len);
+  E.row[at].chars[len] = '\0';
+  E.numrows++;
+}
+
+/**
+ * 更新E.rowoff和E.coloff的大小
+ */
+void editorScroll() {
+  if (E.cy < E.rowoff) {
+    E.rowoff = E.cy;
+  }
+  if (E.cy >= E.rowoff + E.screenRows) {
+    E.rowoff = E.cy - E.screenRows + 1;
+  }
+  if (E.cx < E.coloff) {
+    E.coloff = E.cx;
+  }
+  if (E.cx >= E.coloff + E.screenCols) {
+    E.coloff = E.cx - E.screenCols + 1;
   }
 }
 
